@@ -12,7 +12,7 @@
       "name": "pptx-writer",
       "source": "./",
       "description": "마크다운을 대용량 PPTX 프레젠테이션으로 변환. 줄글→개조식 변환, 세션 기반 점진적 슬라이드 추가, 회사 마스터 슬라이드 지원.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "category": "productivity",
       "tags": ["pptx", "powerpoint", "markdown", "presentation", "slide"]
     }
