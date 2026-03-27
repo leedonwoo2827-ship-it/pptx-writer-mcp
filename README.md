@@ -72,8 +72,8 @@ layout: title_content
 ## 회사 일반현황
 | 구분 | 내용 |
 |------|------|
-| 회사명 | (주)유비온 |
-| 대표자 | 임재환 |
+| 회사명 | factory |
+| 대표자 | dekman |
 
 ---slide
 layout: blank
