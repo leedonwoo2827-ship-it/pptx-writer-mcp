@@ -4,5 +4,6 @@ __pycache__/
 *.pptx
 !templates/default.pptx
 samples/
+sample_*.pptx
 proposal-body.md
 proposal-backbone.md

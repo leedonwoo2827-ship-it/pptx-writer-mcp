@@ -1,13 +1,20 @@
 {
+  "name": "pptx-writer-mcp",
   "owner": {
-    "name": "leedonwoo2827-ship-it",
-    "url": "https://github.com/leedonwoo2827-ship-it"
+    "name": "leedonwoo2827-ship-it"
+  },
+  "metadata": {
+    "description": "마크다운을 대용량 PPTX 프레젠테이션으로 변환하는 플러그인 마켓플레이스",
+    "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "pptx-writer",
-      "description": "마크다운을 대용량 PPTX 프레젠테이션으로 변환하는 플러그인",
-      "path": "."
+      "source": ".",
+      "description": "마크다운을 대용량 PPTX 프레젠테이션으로 변환. 줄글→개조식 변환, 세션 기반 점진적 슬라이드 추가, 회사 마스터 슬라이드 지원.",
+      "version": "1.0.0",
+      "category": "productivity",
+      "tags": ["pptx", "powerpoint", "markdown", "presentation", "slide"]
     }
   ]
 }
