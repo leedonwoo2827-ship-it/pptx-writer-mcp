@@ -2,89 +2,85 @@
 """
 PPTX Writer MCP Server Launcher
 
-Automatically sets up venv + dependencies, then starts the MCP server.
-Used by Claude Desktop plugin system.
+Installs dependencies on first run (pip install --target),
+then runs the MCP server directly in the same process.
+No venv needed - uses PYTHONPATH for package resolution.
 """
 
+import importlib
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", Path(__file__).parent.parent))
-PLUGIN_DATA = Path(os.environ.get("CLAUDE_PLUGIN_DATA", PLUGIN_ROOT / ".venv_data"))
+PLUGIN_DATA = Path(os.environ.get("CLAUDE_PLUGIN_DATA", PLUGIN_ROOT / ".plugin_data"))
+LIB_DIR = PLUGIN_DATA / "lib"
 
-VENV_DIR = PLUGIN_DATA / ".venv"
-REQ_FILE = PLUGIN_ROOT / "requirements.txt"
-REQ_MARKER = PLUGIN_DATA / "requirements.txt"
+# Ensure lib dir is on sys.path
+sys.path.insert(0, str(LIB_DIR))
+sys.path.insert(0, str(PLUGIN_ROOT / "src"))
 
-if sys.platform == "win32":
-    VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
-    VENV_PIP = VENV_DIR / "Scripts" / "pip"
-else:
-    VENV_PYTHON = VENV_DIR / "bin" / "python"
-    VENV_PIP = VENV_DIR / "bin" / "pip"
+
+def install_deps():
+    """Install dependencies using pip --target (no venv needed)."""
+    print("[pptx-writer] Installing dependencies (first run)...", file=sys.stderr)
+    LIB_DIR.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            sys.executable, "-m", "pip", "install",
+            "--target", str(LIB_DIR),
+            "--quiet",
+            "-r", str(PLUGIN_ROOT / "requirements.txt"),
+        ],
+        check=True,
+    )
+    # Write marker so we can skip next time
+    marker = PLUGIN_DATA / ".installed"
+    marker.write_text(
+        (PLUGIN_ROOT / "requirements.txt").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    importlib.invalidate_caches()
+    print("[pptx-writer] Dependencies installed.", file=sys.stderr)
 
 
 def needs_install():
-    """Check if dependencies need to be installed."""
-    if not VENV_PYTHON.exists():
+    """Fast check: are dependencies already installed?"""
+    marker = PLUGIN_DATA / ".installed"
+    if not marker.exists():
         return True
-    if not REQ_MARKER.exists():
+    try:
+        current = (PLUGIN_ROOT / "requirements.txt").read_text(encoding="utf-8")
+        installed = marker.read_text(encoding="utf-8")
+        return current != installed
+    except Exception:
         return True
-    return REQ_FILE.read_text(encoding="utf-8") != REQ_MARKER.read_text(encoding="utf-8")
 
 
-def setup():
-    """Create venv and install dependencies if needed."""
-    if not needs_install():
-        return
+def main():
+    # Install deps if needed
+    if needs_install():
+        install_deps()
 
-    print("[pptx-writer] Setting up dependencies...", file=sys.stderr)
-
-    # Create venv
-    if not VENV_PYTHON.exists():
-        PLUGIN_DATA.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [sys.executable, "-m", "venv", str(VENV_DIR)],
-            check=True,
-        )
-
-    # Install dependencies
-    subprocess.run(
-        [str(VENV_PIP), "install", "-q", "-r", str(REQ_FILE)],
-        check=True,
-    )
-
-    # Mark as done
-    shutil.copy2(REQ_FILE, REQ_MARKER)
-    print("[pptx-writer] Setup complete.", file=sys.stderr)
-
-
-def ensure_template():
-    """Generate default template if not bundled."""
+    # Generate default template if not bundled
     template = PLUGIN_ROOT / "templates" / "default.pptx"
     if not template.exists():
         print("[pptx-writer] Generating default template...", file=sys.stderr)
         subprocess.run(
-            [str(VENV_PYTHON), str(PLUGIN_ROOT / "create_template.py")],
+            [sys.executable, str(PLUGIN_ROOT / "create_template.py")],
+            env={**os.environ, "PYTHONPATH": str(LIB_DIR)},
             check=True,
         )
 
-
-def main():
-    setup()
-    ensure_template()
-
-    # Replace this process with the MCP server
-    server_py = str(PLUGIN_ROOT / "server.py")
-    if sys.platform == "win32":
-        # os.execv doesn't work well on Windows; use subprocess
-        result = subprocess.run([str(VENV_PYTHON), server_py])
-        sys.exit(result.returncode)
-    else:
-        os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), server_py])
+    # Run server.py directly in this process (no subprocess overhead)
+    server_path = str(PLUGIN_ROOT / "server.py")
+    server_code = compile(
+        open(server_path, encoding="utf-8").read(),
+        server_path,
+        "exec",
+    )
+    exec(server_code, {"__name__": "__main__", "__file__": server_path})
 
 
 if __name__ == "__main__":

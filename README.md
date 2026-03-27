@@ -133,7 +133,7 @@ create_pptx(output_file="out.pptx", template_file="C:/경로/회사템플릿.ppt
 
 ```
 아래 마크다운 파일을 PPTX 프레젠테이션으로 만들어줘.
-줄글은 개조식(불릿 포인트)으로 변환하고, 표는 그대로 유지해줘.
+줄글은 개조식으로 변환하고, 표는 그대로 유지해줘.
 섹션별로 나눠서 작업해줘.
 
 파일: C:/경로/proposal-body.md
