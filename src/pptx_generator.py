@@ -61,6 +61,7 @@ class PPTXGenerator:
         self.base_dir = base_dir
         self.colors = {**DEFAULT_COLORS, **self.styles.get("colors", {})}
         self._layout_cache = {}
+        self._content_area_cache = {}  # layout_name → {left, top, width, height}
         self._build_layout_cache()
 
     def _build_layout_cache(self):
@@ -73,6 +74,87 @@ class PPTXGenerator:
             for key, val in mapping.items():
                 if val.lower().strip() == name_lower:
                     self._layout_cache[key.lower()] = layout
+            # 콘텐츠 영역 자동 감지
+            self._detect_content_area(layout)
+
+    def _detect_content_area(self, layout):
+        """레이아웃의 콘텐츠 영역을 자동 감지.
+
+        플레이스홀더가 없는 레이아웃에서:
+        1. 콘텐츠 영역 사각형이 있으면 그것을 사용
+        2. 없으면 헤더 영역 아래의 빈 공간을 계산
+        """
+        name = layout.name.lower().strip()
+
+        # 스타일에서 명시적 content_area 설정 확인
+        content_areas = self.styles.get("content_areas", {})
+        if name in content_areas:
+            self._content_area_cache[name] = content_areas[name]
+            return
+
+        # 플레이스홀더가 있으면 스킵 (플레이스홀더 기반 렌더링 사용)
+        if list(layout.placeholders):
+            return
+
+        shapes = list(layout.shapes)
+        if not shapes:
+            return
+
+        # 방법 1: 콘텐츠 영역 사각형 찾기 (top > 5cm이고 높이 > 10cm)
+        best = None
+        best_area = 0
+        for shape in shapes:
+            if shape.has_text_frame and shape.text_frame.text.strip():
+                continue
+            w = shape.width or 0
+            h = shape.height or 0
+            t = shape.top or 0
+            area = w * h
+            if area > best_area and h > Emu(5000000) and t > Emu(2000000):
+                best_area = area
+                best = shape
+
+        if best:
+            self._content_area_cache[name] = {
+                "left": best.left,
+                "top": best.top,
+                "width": best.width,
+                "height": best.height,
+            }
+            return
+
+        # 방법 2: 헤더 영역의 하단을 계산하여 콘텐츠 영역 추정
+        header_bottom = 0
+        footer_top = self.prs.slide_height
+        for shape in shapes:
+            bottom = (shape.top or 0) + (shape.height or 0)
+            top = shape.top or 0
+            # 상단 영역(top < 슬라이드 높이의 1/3)의 shape → 헤더
+            if top < self.prs.slide_height // 3:
+                header_bottom = max(header_bottom, bottom)
+            # 하단 영역(top > 슬라이드 높이의 2/3)의 shape → 푸터
+            if top > self.prs.slide_height * 2 // 3:
+                footer_top = min(footer_top, top)
+
+        if header_bottom > 0:
+            margin = Emu(360000)  # 1cm 여백
+            self._content_area_cache[name] = {
+                "left": Emu(324000),    # 0.9cm
+                "top": header_bottom + margin,
+                "width": self.prs.slide_width - Emu(648000),  # 양쪽 0.9cm
+                "height": footer_top - header_bottom - margin * 2,
+            }
+
+    def _get_content_area(self, layout_name: str):
+        """레이아웃의 콘텐츠 영역 반환. 없으면 None."""
+        name = layout_name.lower().strip()
+        if name in self._content_area_cache:
+            return self._content_area_cache[name]
+        # 부분 매칭
+        for cached_name, area in self._content_area_cache.items():
+            if name in cached_name or cached_name in name:
+                return area
+        return None
 
     def _get_layout(self, layout_name: str):
         """레이아웃 이름으로 SlideLayout 조회. 폴백 체인 적용."""
@@ -116,6 +198,10 @@ class PPTXGenerator:
             layout_name = spec.get("layout", "title_content")
             layout = self._get_layout(layout_name)
             slide = self.prs.slides.add_slide(layout)
+
+            # 실제 레이아웃 이름을 spec에 보존 (콘텐츠 영역 감지용)
+            actual_layout_name = layout.name.lower().strip()
+            spec["_actual_layout"] = actual_layout_name
 
             if layout_name in ("section_header",):
                 self._render_section_header(slide, spec)
@@ -166,6 +252,7 @@ class PPTXGenerator:
     def _render_section_header(self, slide, spec: dict):
         """Section Header 슬라이드 렌더링."""
         title = spec.get("title", "")
+        layout_name = spec.get("layout", "section_header")
 
         # 플레이스홀더가 있으면 사용
         for ph in slide.placeholders:
@@ -178,11 +265,20 @@ class PPTXGenerator:
                 ph.text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
                 break
         else:
-            # 플레이스홀더 없으면 텍스트박스 추가
-            left = Inches(1)
-            top = Inches(2.5)
-            width = self.prs.slide_width - Inches(2)
-            height = Inches(2)
+            # 콘텐츠 영역 감지
+            actual_layout = spec.get("_actual_layout", layout_name)
+            content_area = self._get_content_area(actual_layout) or self._get_content_area(layout_name)
+            if content_area:
+                left = content_area["left"]
+                top = content_area["top"]
+                width = content_area["width"]
+                height = Inches(2)
+            else:
+                left = Inches(1)
+                top = Inches(2.5)
+                width = self.prs.slide_width - Inches(2)
+                height = Inches(2)
+
             txBox = slide.shapes.add_textbox(left, top, width, height)
             tf = txBox.text_frame
             tf.word_wrap = True
@@ -198,6 +294,7 @@ class PPTXGenerator:
         title = spec.get("title", "")
         subtitle = spec.get("subtitle", "")
         blocks = spec.get("blocks", [])
+        layout_name = spec.get("layout", "title_content")
 
         # Title 플레이스홀더
         title_set = False
@@ -214,15 +311,29 @@ class PPTXGenerator:
             elif idx == 1:  # Content
                 content_ph = ph
 
+        # 콘텐츠 영역 감지 (실제 레이아웃 이름 우선)
+        actual_layout = spec.get("_actual_layout", layout_name)
+        content_area = self._get_content_area(actual_layout) or self._get_content_area(layout_name)
+
         if not title_set and title:
-            # 타이틀 플레이스홀더 없으면 텍스트박스
+            display_title = f"{title} — {subtitle}" if subtitle else title
+            if content_area:
+                # 레이아웃의 헤더 영역에 타이틀 배치 (헤더 바 내부)
+                title_left = content_area["left"]
+                title_top = content_area["top"]
+                title_width = content_area["width"]
+                title_height = Emu(500000)  # ~1.4cm
+            else:
+                title_left = Inches(0.7)
+                title_top = Inches(0.3)
+                title_width = self.prs.slide_width - Inches(1.4)
+                title_height = Inches(0.8)
+
             txBox = slide.shapes.add_textbox(
-                Inches(0.7), Inches(0.3),
-                self.prs.slide_width - Inches(1.4), Inches(0.8)
+                title_left, title_top, title_width, title_height
             )
             tf = txBox.text_frame
             tf.word_wrap = True
-            display_title = f"{title} — {subtitle}" if subtitle else title
             self._add_styled_text(tf, display_title,
                                   self.styles.get("styles", {}).get("chapter_title", {}))
 
@@ -230,8 +341,18 @@ class PPTXGenerator:
         if content_ph is not None:
             self._render_blocks_in_placeholder(content_ph, blocks)
         elif blocks:
-            # 콘텐츠 플레이스홀더 없으면 직접 배치
-            self._render_blocks_direct(slide, blocks, top_offset=Inches(1.4))
+            if content_area:
+                # 레이아웃 콘텐츠 영역 기반 배치
+                title_reserve = Emu(600000)  # 타이틀 공간 ~1.7cm
+                self._render_blocks_direct(
+                    slide, blocks,
+                    top_offset=content_area["top"] + title_reserve,
+                    margin_left=content_area["left"],
+                    content_width=content_area["width"],
+                    max_bottom=content_area["top"] + content_area["height"],
+                )
+            else:
+                self._render_blocks_direct(slide, blocks, top_offset=Inches(1.4))
 
     # -------------------------------------------------------------------
     # 렌더링: Blank Slide
@@ -240,21 +361,35 @@ class PPTXGenerator:
         """Blank 슬라이드: 테이블/이미지 직접 배치."""
         title = spec.get("title", "")
         blocks = spec.get("blocks", [])
+        layout_name = spec.get("layout", "blank")
+        actual_layout = spec.get("_actual_layout", layout_name)
 
-        # 제목이 있으면 상단에 텍스트박스
-        top_offset = Inches(0.5)
+        content_area = self._get_content_area(actual_layout) or self._get_content_area(layout_name)
+
+        if content_area:
+            m_left = content_area["left"]
+            m_width = content_area["width"]
+            m_max = content_area["top"] + content_area["height"]
+            top_offset = content_area["top"]
+        else:
+            m_left = Inches(0.7)
+            m_width = self.prs.slide_width - Inches(1.4)
+            m_max = None
+            top_offset = Inches(0.5)
+
         if title:
             txBox = slide.shapes.add_textbox(
-                Inches(0.7), Inches(0.3),
-                self.prs.slide_width - Inches(1.4), Inches(0.7)
+                m_left, top_offset, m_width, Inches(0.7)
             )
             tf = txBox.text_frame
             tf.word_wrap = True
             self._add_styled_text(tf, title,
                                   self.styles.get("styles", {}).get("chapter_title", {}))
-            top_offset = Inches(1.2)
+            top_offset += Inches(0.8)
 
-        self._render_blocks_direct(slide, blocks, top_offset=top_offset)
+        self._render_blocks_direct(slide, blocks, top_offset=top_offset,
+                                   margin_left=m_left, content_width=m_width,
+                                   max_bottom=m_max)
 
     # -------------------------------------------------------------------
     # 블록 렌더링
@@ -306,15 +441,19 @@ class PPTXGenerator:
                     self._render_table_as_text(para, block)
                 # 이미지는 스킵 (직접 배치 필요)
 
-    def _render_blocks_direct(self, slide, blocks: list, top_offset=None):
+    def _render_blocks_direct(self, slide, blocks: list, top_offset=None,
+                              margin_left=None, content_width=None, max_bottom=None):
         """슬라이드에 블록을 직접 shape으로 배치."""
         if top_offset is None:
             top_offset = Inches(1.4)
+        if margin_left is None:
+            margin_left = Inches(0.7)
+        if content_width is None:
+            content_width = self.prs.slide_width - Inches(1.4)
+        if max_bottom is None:
+            max_bottom = self.prs.slide_height - Inches(0.5)
 
         current_top = top_offset
-        margin_left = Inches(0.7)
-        content_width = self.prs.slide_width - Inches(1.4)
-        max_bottom = self.prs.slide_height - Inches(0.5)
 
         for block in blocks:
             if current_top >= max_bottom:
